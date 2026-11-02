@@ -1,0 +1,193 @@
+---
+title: "Incremental Learning"
+author: "CCE"
+date: "2026-11-01"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Loading libraries and dataset to use
+```{r}
+packages <- c("keras3", "tensorflow")
+for (pkg in packages){
+  if(!require(pkg, character.only = T)){
+    install.packages(pkg, dependencies = T)
+    library(pkg, character.only = T)
+  }
+}
+mnist <- dataset_mnist()
+MNIST_X <- mnist$train$x
+MNIST_Y <- mnist$train$y
+summary(as.factor(MNIST_Y))
+```
+
+
+Separating MNIST into subgroups of label (Tasks 1-5)
+```{r}
+indices <- list(
+  which(as.factor(MNIST_Y) == 0),
+  which(as.factor(MNIST_Y) == 1),
+  which(as.factor(MNIST_Y) == 2),
+  which(as.factor(MNIST_Y) == 3),
+  which(as.factor(MNIST_Y) == 4),
+  which(as.factor(MNIST_Y) == 5),
+  which(as.factor(MNIST_Y) == 6),
+  which(as.factor(MNIST_Y) == 7),
+  which(as.factor(MNIST_Y) == 8),
+  which(as.factor(MNIST_Y) == 9)
+)
+
+Train_tasks_indices <- c(list(indices[1:2]), list(indices[3:4]), list(indices[5:6]), list(indices[7:8]), list(indices[9:10]))
+```
+
+Defining an CNN to perform the tasks (pre-setting 10 label to be trained incrementally in 5 increments)
+```{r}
+Define_model <- function () {
+  model <- keras_model_sequential() %>%
+    layer_conv_2d(filters = 32, kernel_size = c(3,3), activation = "relu") %>%
+    layer_max_pooling_2d(pool_size = c(2,2)) %>%
+    layer_conv_2d(filters = 64, kernel_size = c(3,3), activation = "relu") %>%
+    layer_max_pooling_2d(pool_size = c(2,2)) %>%
+    layer_flatten() %>%
+    layer_dense(units = 128, activation = "relu") %>%
+    layer_dropout(0.5) %>%
+    layer_dense(units = 10, activation = "softmax")
+  
+  model %>% compile(
+    loss = "sparse_categorical_crossentropy",
+    optimizer = optimizer_adam(),
+    metrics = c("accuracy")
+  )  
+  return(model)
+}
+model <- Define_model()
+```
+
+Test set segregation
+```{r}
+TestX <- mnist$test$x
+TestY <- mnist$test$y
+# Separating Test set into the corresponding groups in accordance to the tasks
+test_indices <- list(
+  which(as.factor(TestY) == 0),
+  which(as.factor(TestY) == 1),
+  which(as.factor(TestY) == 2),
+  which(as.factor(TestY) == 3),
+  which(as.factor(TestY) == 4),
+  which(as.factor(TestY) == 5),
+  which(as.factor(TestY) == 6),
+  which(as.factor(TestY) == 7),
+  which(as.factor(TestY) == 8),
+  which(as.factor(TestY) == 9)
+)
+
+Test_tasks_indices <- c(list(test_indices[1:2]), list(test_indices[3:4]), list(test_indices[5:6]), list(test_indices[7:8]), list(test_indices[9:10]))
+```
+
+--- Block 1 ---
+
+Data preprocessing for full batch learning
+```{r}
+#turning image into list of grey scale values in range 0-1
+x_train_full <- array_reshape(MNIST_X, c(nrow(MNIST_X), 28, 28, 1))/255
+x_test_full <- array_reshape(TestX, c(nrow(TestX), 28, 28, 1))/255
+
+y_train_full <- MNIST_Y
+y_test_full <- TestY
+```
+
+Training model on full dataset
+```{r}
+history <- model %>% fit(
+ x_train_full, y_train_full, batch_size = 128, epochs = 5, validation_split = 0.1
+)
+```
+
+Evaluate model on full dataset
+```{r}
+score <- model %>% evaluate(x_test_full, y_test_full, verbose = 0)
+cat("Test Accuracy:", score$accuracy, "\n")
+cat("Test Loss:", score$loss, "\n")
+```
+
+
+--- End of block 1 ---
+In block 1, the general flow is practiced, full dataset is available on train time, data is split into train and test set. Train set is used to train and yield a model capable of performing (in this case) the classification task, and the model is evaluated on reserved test set.
+
+Yet in real life, often time the data is evolving as times goes or aggregating the dataset till full coverage is unrealistic. One of the workaround involves focusing on subtask, and appending with future iteration. If computational resources and memory available permits, using multiple models to form an ensemble is also an alternative, yet that is computationally expensive and require further aggregation. In response, mimicking human learning behaviour, incremental learning is one of the method to sequentially introduce tasks to the model such that is can gain knowledge on new tasks.
+
+--- Block 2 ---
+```{r}
+Define_model()
+for (x in 1:5){
+  cat("Group", toString(x), "\n")
+  cat("This task aims to classify between ", 2*(x-1), " and ", 2*x-1, "\n")
+  train_indices <- append(Train_tasks_indices[[x]][[1]], Train_tasks_indices[[x]][[2]])
+  test_indices <- append(Test_tasks_indices[[x]][[1]], Test_tasks_indices[[x]][[2]])
+  X_train_task <- x_train_full[train_indices,,,]
+  X_train_task <- array_reshape(X_train_task, c(nrow(X_train_task), 28, 28, 1))/255
+  Y_train_task <- MNIST_Y[train_indices]
+  X_test_task <- x_test_full[test_indices,,,]
+  X_test_task <- array_reshape(X_test_task, c(nrow(X_test_task), 28, 28, 1))/255
+  Y_test_task <- TestY[test_indices]
+  print(shape(X_train_task))
+  print(shape(Y_train_task))
+  history <- model %>% fit(X_train_task, Y_train_task, batch_size = 128, epochs = 5, validation_split = 0.1, shuffle = T)
+  score <- model %>% evaluate (X_test_task, Y_test_task, verbose = 0)
+  cat("Test Accuracy for task ", x, ":", score$accuracy, "\n")
+  cat("Test Loss for task ", x, ":", score$loss, "\n")
+}
+```
+
+```{r}
+  score <- model %>% evaluate (x_test_full, y_test_full, verbose = 0)
+  cat("Test Accuracy for 10-classes classification", ":", score$accuracy, "\n")
+  cat("Test Loss for 10-classes classification", ":", score$loss, "\n")
+```
+
+--- End of Block 2 ---
+
+With just incremental learning, the accuracy drops to roughly 10%, equivalent to guessing and assigning a task at random $\approx \frac{1}{10}$. This is counter-intuitive as if we refer to the progress and epochs of training in individual task, the accuracy remains high and loss remains low. This phenomenon is coined with the name "catastrophic forgetting", and it is one of the major issue faced by industrial application, and in general where the data is provided in continuous streams instead of aggregated at hand.
+
+There are multiple techniques designed to address this issue and several other issues similar by nature, e.g. loss of plasticity, plasticity-stability dilemma etc. One of the most effective methods, commonly agreed upon is the practicing of experience replay. Essentially, experience replay mimics the human behaviour in learning in phases - learn, recap, repeat - to retain previously gained knowledge and skills. In terms of model preparation, this manifest in two ways, blending the rehearsal into the training data (concurrent experience replay), or deliberately setting up a phase just to "revise" (sequential experience replay). Both approach as some established pros and cons, yet further research are still ongoing.
+
+The code below shows sequential experience replay.
+
+```{r}
+model <- Define_model()
+rehearsal_indices <- c()
+for (x in 1:5){
+  cat("Group", toString(x), "\n")
+  cat("rehearsal exemplar size:", length(rehearsal_indices),"\n")
+  train_indices <- append(Train_tasks_indices[[x]][[1]], Train_tasks_indices[[x]][[2]])
+  test_indices <- append(Test_tasks_indices[[x]][[1]], Test_tasks_indices[[x]][[2]])
+  current_rehearsal <- sample(train_indices, 0.2*length(train_indices))
+  rehearsal_indices <- unique(append(rehearsal_indices, current_rehearsal))
+  X_train_task <- MNIST_X[train_indices,,]
+  X_train_task <- array_reshape(X_train_task, c(nrow(X_train_task), 28, 28, 1))/255
+  Y_train_task <- MNIST_Y[train_indices]
+  X_test_task <- TestX[test_indices,,]
+  X_test_task <- array_reshape(X_test_task, c(nrow(X_test_task), 28, 28, 1))/255
+  Y_test_task <- TestY[test_indices]
+  history <- model %>% fit(X_train_task, Y_train_task, batch_size = 128, epochs = 5, validation_split = 0.1, shuffle = T)
+  if (x>1){
+    X_train_rehearsal <- MNIST_X[rehearsal_indices,,]
+    X_train_rehearsal <- array_reshape(X_train_rehearsal, c(nrow(X_train_rehearsal), 28, 28, 1))/255
+    Y_train_rehearsal <- MNIST_Y[rehearsal_indices]
+    history<- model %>% fit(X_train_rehearsal, Y_train_rehearsal)
+  }
+  
+  score <- model %>% evaluate (X_test_task, Y_test_task, verbose = 0)
+  cat("Test Accuracy for task ", x, ":", score$accuracy, "\n")
+  cat("Test Loss for task ", x, ":", score$loss, "\n")
+  score <- model %>% evaluate (x_test_full, y_test_full, verbose = 0)
+  cat("Test Accuracy for 10-classes classification", ":", score$accuracy, "\n")
+  cat("Test Loss for 10-classes classification ", ":", score$loss, "\n")
+}
+```
+
+With this small example, it shows the ability of incrementally trained models to asymptotically approach the performance of a offline trained models with research studies proving such. However, training a model incrementally has several advantages including significantly smaller memory overhead, staged training with pausability and more. This shows that with careful planning, a robust model can be generated with much more restricted computational resources. It is also 
+more relevant to real life application where fully compiled data are not availble at train time, and newer data come in batches.
